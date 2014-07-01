@@ -1,0 +1,129 @@
+#! /usr/bin/perl
+
+
+use strict;
+use warnings;
+use BasicUtil;
+use Log::Dispatch;
+use Log::Dispatch::File;
+use Log::Dispatch::Screen;
+use Getopt::Long qw(:config pass_through);
+
+
+
+my $SSH_PRIVATE_KEY_PATH='/root/.ssh/id_rsa';
+my $SSH_PUB_KEY_PATH="/root/.ssh/id_rsa.pub";
+my $PUB_KEY_LOCAL_TMP_PATH='/tmp/';
+
+my $log_output;
+my $log_level;
+my $backtic_output;
+my $from_ssh_port=58422;
+my $to_ssh_port=58422;
+
+
+GetOptions(
+    'log_output=s' => \$log_output,
+    'log_level=s' => \$log_level,
+    'from_ssh_port=i' => \$from_ssh_port,
+    'to_ssh_port=i' => \$to_ssh_port,
+);
+my $log = BasicUtil::init_log( $log_output, $log_level );
+
+my ($from_ip, $to_ip)=@ARGV;
+
+sub check_ip_sanity($){
+    my $ip=$_[0];
+    if( $ip =~ /^([0-9]{1,3})(\.[0-9]{1,3}){3}$/ ){
+        $log->debug("Correct IP format: $ip");
+    }else{
+        $log->error("Incorrect IP format: $ip");
+        die;
+    }
+    return 0;
+}
+
+check_ip_sanity($from_ip);
+check_ip_sanity($to_ip);
+my $remote_pub_key_exists=0;
+eval{
+    $backtic_output=`ssh -p$from_ssh_port root\@$from_ip ls $SSH_PUB_KEY_PATH 2>&1`;
+};
+if( $? == 0 ){
+    $remote_pub_key_exists=1;
+}
+
+my $remote_private_key_exists=0;
+eval{
+    $backtic_output=`ssh -p$from_ssh_port root\@$from_ip ls $SSH_PRIVATE_KEY_PATH 2>&1`;
+};
+if( $? == 0 ){
+    $remote_private_key_exists=1;
+}
+if( ($remote_private_key_exists==1 && $remote_pub_key_exists==0)
+    || ($remote_private_key_exists==0 && $remote_pub_key_exists==1) ){
+    $log->error("Unpaired private & public key on ${from_ip}. Please remove them first.");
+    die;
+}
+
+#if public auth key doesn't exist
+#we need to generate a new one
+if( $remote_private_key_exists==0 && $remote_pub_key_exists==0 ){
+    $log->info("No public key file on ${from_ip}. Generating keys");
+    eval{
+        $backtic_output=`ssh -p$from_ssh_port root\@$from_ip 'ssh-keygen -N "" -f $SSH_PRIVATE_KEY_PATH -t rsa' 2>&1`;
+        if( $? == 0 ){
+            $log->info("Generate public key on $from_ip success");
+        }else{
+            $log->error("Generate public key on $from_ip failed with: $backtic_output");
+            die;
+        }
+    };
+}
+
+#copy public key on remote server to local file
+eval{
+    $backtic_output=`scp -P58422 root\@$from_ip:$SSH_PUB_KEY_PATH $PUB_KEY_LOCAL_TMP_PATH/ 2>&1`;
+};
+if( $? == 0 ){
+    $log->info("Copy public key of $from_ip to local dir success");
+}else{
+    $log->error("Copy public key of $from_ip to local dir failed with:$@");
+    die;
+}
+
+
+#add public key as authorized_keys on other servers
+eval{
+    $backtic_output=`ssh-copy-id -i $PUB_KEY_LOCAL_TMP_PATH/id_rsa.pub root\@$to_ip 2>&1`;
+};
+if( $? == 0 ){
+    $log->info("Adding public key of $from_ip to $to_ip authorized_keys success");
+}else{
+    $log->error("Adding public key of $from_ip to $to_ip authorized_keys failed with: $backtic_output");
+    die;
+}
+
+
+#remove local tmp key
+eval{
+    $backtic_output=`rm -f $PUB_KEY_LOCAL_TMP_PATH/id_rsa.pub 2>&1`;
+};
+if( $? == 0 ){
+    $log->info("Remove local temp public key file success");
+}else{
+    $log->warning("Remove local temp public key file failed with: $backtic_output");
+}
+
+
+#check whether we can really login from a to b
+#without password
+eval{
+    $backtic_output=`ssh -p$from_ssh_port root\@$from_ip 'ssh -p$to_ssh_port -o StrictHostKeyChecking=no root\@$to_ip ifconfig' 2>&1`;
+};
+if( $? == 0 ){
+    $log->info("Verify login from $from_ip to $to_ip success");
+}else{
+    $log->warnings("Verify login from $from_ip to $to_ip failed with $backtic_output");
+}
+

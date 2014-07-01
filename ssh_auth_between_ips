@@ -1,0 +1,74 @@
+#! /usr/bin/perl
+
+
+use strict;
+use warnings;
+use BasicUtil;
+use Getopt::Long qw(:config pass_through);
+
+
+my $log_output;
+my $log_level;
+my $backtic_output;
+my $is_debug;
+my $ssh_port;
+
+
+GetOptions(
+    'log_output=s' => \$log_output,
+    'log_level=s' => \$log_level,
+    'debug' => \$is_debug,
+    'ssh_port=i' => \$ssh_port,
+);
+
+my @ip_array=@ARGV;
+unless($log_level){
+    if($is_debug){
+        $log_level='debug';
+    }else{
+        $log_level='info';
+    }
+}
+my $log = BasicUtil::init_log( $log_output, $log_level );
+
+
+sub check_ip_sanity($){
+    my $ip=$_[0];
+    if( $ip =~ /^([0-9]{1,3})(\.[0-9]{1,3}){3}$/ ){
+        $log->debug("Correct IP format: $ip");
+    }else{
+        $log->error("Incorrect IP format: $ip");
+        die;
+    }
+    return 0;
+}
+
+foreach my $ip (@ip_array){
+    check_ip_sanity($ip);
+}
+
+foreach my $from_ip (@ip_array){
+    #add public key as authorized_keys on other servers
+    foreach my $to_ip (@ip_array){    
+        eval{
+            my $cmd = 'ssh_auth_from_a2b ';
+            if( $log_level ){
+                $cmd .= " --log_level=$log_level";
+            }
+            if( $log_output ){
+                $cmd .= " --log_output=$log_output";
+            }else{
+                $cmd .= " --log_output='warning'";
+            }
+            $backtic_output=`$cmd $from_ip $to_ip`;
+        };
+        if( $? == 0 ){
+            $log->info("Adding public key of $from_ip to $to_ip authorized_keys success");
+        }else{
+            $log->error("Adding public key of $from_ip to $to_ip authorized_keys failed with: $@");
+        }
+    }
+}
+
+
+
